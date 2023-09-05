@@ -3,35 +3,60 @@ package com.github.matsgemmeke.sandbox.service;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.matsgemmeke.sandbox.model.Competition;
 import com.github.matsgemmeke.sandbox.model.User;
+import com.github.matsgemmeke.sandbox.model.UserDTO;
 import com.github.matsgemmeke.sandbox.repository.UserRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
-@SpringJUnitConfig(UserService.class)
 public class UserServiceTest {
 
-    @MockBean
+    private HttpService httpService;
+    private ObjectMapper objectMapper;
+    private RabbitTemplate rabbitTemplate;
     private UserRepository repository;
-    @Autowired
-    private UserService service;
+
+    @BeforeEach
+    public void setUp() {
+        this.httpService = mock(HttpService.class);
+        this.objectMapper = mock(ObjectMapper.class);
+        this.rabbitTemplate = mock(RabbitTemplate.class);
+        this.repository = mock(UserRepository.class);
+    }
 
     @Test
     public void shouldReturnAllUsersFromRepository() {
+        Competition competition = new Competition();
         Iterable<User> users = Collections.singletonList(new User());
 
+        when(httpService.get(anyString(), eq(Competition.class))).thenReturn(competition);
         when(repository.findAll()).thenReturn(users);
 
-        List<User> result = service.getAllUsers();
+        UserService service = new UserService(httpService, objectMapper, rabbitTemplate, repository);
+        List<UserDTO> result = service.getAllUsers();
 
         assertThat(result).isNotNull();
         assertThat(result.size()).isEqualTo(1);
+    }
+
+    @Test
+    public void returnsNullIfRepositoryReturnsNothing() {
+        int userId = 1;
+        Optional<User> optional = Optional.empty();
+
+        when(repository.findById(userId)).thenReturn(optional);
+
+        UserService service = new UserService(httpService, objectMapper, rabbitTemplate, repository);
+        UserDTO result = service.getUser(userId);
+
+        assertThat(result).isNull();
     }
 
     @Test
@@ -42,36 +67,30 @@ public class UserServiceTest {
 
         when(repository.findById(userId)).thenReturn(optional);
 
-        User result = service.getUser(userId);
+        UserService service = new UserService(httpService, objectMapper, rabbitTemplate, repository);
+        UserDTO result = service.getUser(userId);
 
-        assertThat(result).isEqualTo(user);
+        assertThat(result).isNotNull();
+        assertThat(result.getName()).isEqualTo(user.getName());
     }
 
     @Test
-    public void returnsNullWhenFindingWithUnknownId() {
-        int userId = 1;
-        Optional<User> optional = Optional.empty();
-
-        when(repository.findById(userId)).thenReturn(optional);
-
-        User result = service.getUser(userId);
-
-        assertThat(result).isNull();
-    }
-
-    @Test
-    public void savingUserCallsRepositoryFunction() {
+    public void savingUserCallsQueueFunction() throws Exception {
         User user = new User();
 
+        when(objectMapper.writeValueAsString(user)).thenReturn("test");
+
+        UserService service = new UserService(httpService, objectMapper, rabbitTemplate, repository);
         service.saveUser(user);
 
-        verify(repository, times(1)).save(user);
+        verify(rabbitTemplate, times(1)).convertAndSend("sandbox", "test");
     }
 
     @Test
     public void deletingUserCallsRepositoryFunction() {
         int userId = 1;
 
+        UserService service = new UserService(httpService, objectMapper, rabbitTemplate, repository);
         service.deleteUser(1);
 
         verify(repository, times(1)).deleteById(userId);
